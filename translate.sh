@@ -32,8 +32,17 @@ if [ ! -f "src/FrontServlet.java" ]; then
     exit 1
 fi
 
-# Compiler avec lib/jakarta.servlet-api.jar dans le classpath
-javac -cp lib/jakarta.servlet-api.jar src/FrontServlet.java
+# Compiler toutes les classes nécessaires dans un dossier de sortie dédié
+OUT_DIR="classes"
+rm -rf "$OUT_DIR"
+mkdir -p "$OUT_DIR"
+
+# Compiler FrontServlet (sans package) + annotations et controller (packagés)
+javac -cp lib/jakarta.servlet-api.jar -d "$OUT_DIR" \
+    src/FrontServlet.java \
+    Annotation/UrlHandler.java \
+    controllers/Controller.java \
+    scanner/Scanner.java
 
 # Vérifier si la compilation a réussi
 if [ $? -ne 0 ]; then
@@ -41,13 +50,27 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Déplacer FrontServlet.class à la racine pour le JAR
-mv src/FrontServlet.class .
+# Créer le JAR contenant toutes les classes compilées (y compris les packages framework/*)
+rm -f framework.jar
+jar cvf framework.jar -C "$OUT_DIR" .
 
-# Créer le JAR avec FrontServlet.class à la racine
-jar cvf framework.jar FrontServlet.class
+# Déploiement du JAR vers Tomcat et vers l'app de test si disponibles
+TOMCAT_LIB_DEFAULT="/home/zed/apache-tomcat-10.1.28/lib"
+TOMCAT_LIB_PATH="${TOMCAT_LIB:-$TOMCAT_LIB_DEFAULT}"
 
-# Nettoyage optionnel
-# rm FrontServlet.class
+if [ -d "$TOMCAT_LIB_PATH" ]; then
+    echo "Copie de framework.jar vers $TOMCAT_LIB_PATH"
+    cp -f framework.jar "$TOMCAT_LIB_PATH/"
+else
+    echo "Info : Dossier Tomcat lib introuvable ($TOMCAT_LIB_PATH). Définissez TOMCAT_LIB pour activer la copie."
+fi
 
-echo "Compilation et génération de framework.jar terminées."
+# Copier aussi dans l'app de test si présente
+if [ -d "../Test/WEB-INF/lib" ]; then
+    echo "Copie de framework.jar vers ../Test/WEB-INF/lib"
+    cp -f framework.jar ../Test/WEB-INF/lib/
+fi
+
+echo "Compilation et génération de framework.jar terminées, copies effectuées si possible."
+
+# La compilation des classes de test est réalisée dans Test/deploy.sh
