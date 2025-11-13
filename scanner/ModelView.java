@@ -1,7 +1,9 @@
 package framework.scanner;
+import java.util.HashMap;
 
 public class ModelView {
     private String view;
+    private HashMap<String, Object> data = new HashMap<>();
 
     public ModelView() {}
 
@@ -15,5 +17,19 @@ public class ModelView {
 
     public void setView(String view) {
         this.view = view;
+    }
+
+    // --- Getter et Setter pour data ---
+    public HashMap<String, Object> getData() {
+        return data;
+    }
+
+    public void setData(HashMap<String, Object> data) {
+        this.data = data;
+    }
+
+    // --- Méthode pratique pour ajouter un attribut ---
+    public void addItem(String key, Object value) {
+        this.data.put(key, value);
     }
 }
