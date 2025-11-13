@@ -42,7 +42,8 @@ javac -cp lib/jakarta.servlet-api.jar -d "$OUT_DIR" \
     src/FrontServlet.java \
     Annotation/UrlHandler.java \
     controllers/Controller.java \
-    scanner/Scanner.java
+    scanner/Scanner.java \
+    scanner/ModelView.java 
 
 # Vérifier si la compilation a réussi
 if [ $? -ne 0 ]; then
@@ -66,9 +67,9 @@ else
 fi
 
 # Copier aussi dans l'app de test si présente
-if [ -d "../Test/WEB-INF/lib" ]; then
-    echo "Copie de framework.jar vers ../Test/WEB-INF/lib"
-    cp -f framework.jar ../Test/WEB-INF/lib/
+if [ -d "../Test-Framework/WEB-INF/lib" ]; then
+    echo "Copie de framework.jar vers ../Test-Framework/WEB-INF/lib"
+    cp -f framework.jar ../Test-Framework/WEB-INF/lib/
 fi
 
 echo "Compilation et génération de framework.jar terminées, copies effectuées si possible."

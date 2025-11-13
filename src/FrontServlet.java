@@ -1,16 +1,22 @@
 import jakarta.servlet.*;
 import jakarta.servlet.http.*;
 import java.io.*;
+import java.lang.reflect.*;
 import java.util.*;
-import java.net.*;
 import framework.controllers.Controller;
 import framework.annotation.UrlHandler;
 import framework.scanner.Scanner;
+import framework.scanner.ModelView;
 
 public class FrontServlet extends HttpServlet {
     
     private RequestDispatcher defaultDispatcher;
-    private Map<String, Class<?>> urlMappings = new HashMap<>();
+    private Map<String, RouteInfo> urlMappings = new HashMap<>();
+
+    private static class RouteInfo {
+        Class<?> controllerClass;
+        Method method;
+    }
 
     @Override
     public void init() throws ServletException {
@@ -35,14 +41,21 @@ public class FrontServlet extends HttpServlet {
             List<Class<?>> allClasses = Scanner.scanAllClasses(classesDir, "");
             for (Class<?> cls : allClasses) {
                 if (cls.isAnnotationPresent(Controller.class)) {
-                    for (var method : cls.getDeclaredMethods()) {
+                    for (Method method : cls.getDeclaredMethods()) {
                         if (method.isAnnotationPresent(UrlHandler.class)) {
-                            UrlHandler mapping = method.getAnnotation(UrlHandler.class);
-                            urlMappings.put(mapping.url(), cls);
+                            UrlHandler handler = method.getAnnotation(UrlHandler.class);
+                            RouteInfo info = new RouteInfo();
+                            info.controllerClass = cls;
+                            info.method = method;
+                            urlMappings.put(handler.url(), info);
                         }
                     }
                 }
             }
+
+            ///AJOUT : stocker les routes dans le ServletContext pour y accéder plus tard
+            ServletContext contexte = getServletContext();
+            contexte.setAttribute("routesInfo", urlMappings);
             System.out.println("✅ URLs détectées : " + urlMappings.keySet());
 
         } catch (Exception e) {
@@ -53,48 +66,65 @@ public class FrontServlet extends HttpServlet {
     @Override
     protected void service(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
+
         String path = request.getRequestURI().substring(request.getContextPath().length());
-        
-        if (path.equals("/") || path.isEmpty()) {
-            path = "/index.html";
-        }
+        if (path.equals("/") || path.isEmpty()) path = "/index.html";
 
         boolean resourceExists = getServletContext().getResource(path) != null;
 
         if (resourceExists) {
-            defaultServe(request, response);
-        } else {
-            // === 🔍 Vérification via annotations ===
-            if (urlMappings.containsKey(path)) {
-                Class<?> controller = urlMappings.get(path);
-                if (controller.isAnnotationPresent(Controller.class)) {
-                    showResponse(response, path, "✅ L’URL existe (mappée) dans le contrôleur : " + controller.getSimpleName());
+            defaultDispatcher.forward(request, response);
+            return;
+        }
+
+        if (urlMappings.containsKey(path)) {
+            RouteInfo info = urlMappings.get(path);
+            try {
+                Object controller = info.controllerClass.getDeclaredConstructor().newInstance();
+                Object result = info.method.invoke(controller);
+
+                // 🔹 Vérifie si le résultat est un ModelView
+                if (result instanceof ModelView mv) {
+                    String jspPath = "/WEB-INF/views/" + mv.getView();
+                    RequestDispatcher dispatcher = request.getRequestDispatcher(jspPath);
+                    dispatcher.forward(request, response);
                 } else {
-                    showResponse(response, path, "❌ L’URL existe mais la classe " + controller.getSimpleName() + " n’est pas un contrôleur");
+                    showDetailedResponse(response, path, info, result);
                 }
-            } else {
-                customServe(request, response);
+
+            } catch (Exception e) {
+                e.printStackTrace();
+                showError(response, path, e.getMessage());
             }
+        } else {
+            showResponse(response, path, "❌ L’URL n’existe pas dans les contrôleurs");
+        }
+    }
+
+    private void showDetailedResponse(HttpServletResponse response, String path, RouteInfo info, Object result)
+            throws IOException {
+        response.setContentType("text/html;charset=UTF-8");
+        try (PrintWriter out = response.getWriter()) {
+            out.println("<html><body>");
+            out.println("<h3>URL : " + path + "</h3>");
+            out.println("<p>Classe : " + info.controllerClass.getSimpleName() + "</p>");
+            out.println("<p>Méthode : " + info.method.getName() + "()</p>");
+            if (result != null) out.println("<hr>" + result);
+            out.println("</body></html>");
         }
     }
 
     private void showResponse(HttpServletResponse response, String path, String message) throws IOException {
         response.setContentType("text/html;charset=UTF-8");
         try (PrintWriter out = response.getWriter()) {
-            out.println("<html><body>");
-            out.println("URL saisie : " + path + "<br>");
-            out.println(message);
-            out.println("</body></html>");
+            out.println("<html><body>" + message + "</body></html>");
         }
     }
 
-    private void defaultServe(HttpServletRequest request, HttpServletResponse response)
-            throws ServletException, IOException {
-        defaultDispatcher.forward(request, response);
-    }
-
-    private void customServe(HttpServletRequest request, HttpServletResponse response)
-            throws IOException {
-        showResponse(response, request.getRequestURI(), "❌ L’URL n’existe pas dans les contrôleurs");
+    private void showError(HttpServletResponse response, String path, String msg) throws IOException {
+        response.setContentType("text/html;charset=UTF-8");
+        try (PrintWriter out = response.getWriter()) {
+            out.println("<html><body><h3>Erreur : " + msg + "</h3></body></html>");
+        }
     }
 }
