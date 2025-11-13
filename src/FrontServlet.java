@@ -85,6 +85,11 @@ public class FrontServlet extends HttpServlet {
 
                 // 🔹 Vérifie si le résultat est un ModelView
                 if (result instanceof ModelView mv) {
+                    
+                    // On place les données dans la requête
+                    for (Map.Entry<String, Object> entry : mv.getData().entrySet()) {
+                        request.setAttribute(entry.getKey(), entry.getValue());
+                    }
                     String jspPath = "/WEB-INF/views/" + mv.getView();
                     RequestDispatcher dispatcher = request.getRequestDispatcher(jspPath);
                     dispatcher.forward(request, response);
