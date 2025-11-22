@@ -3,6 +3,8 @@ package framework.scanner;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import jakarta.servlet.http.HttpServletRequest;
@@ -34,40 +36,80 @@ public class Scanner {
         return classes;
     }
 
+    // NOUVELLE FONCTION MAGIQUE – EXTRAIT {id} DE L'URL
+    private static Map<String, String> extractPathVariables(String pattern, String actualPath) {
+        Map<String, String> variables = new HashMap<>();
+        
+        if (!pattern.contains("{") || !pattern.contains("}")) {
+            return variables; // pas de variable
+        }
+
+        String[] patternParts = pattern.split("/");
+        String[] pathParts = actualPath.split("/");
+
+        if (patternParts.length != pathParts.length) {
+            return variables;
+        }
+
+        for (int i = 0; i < patternParts.length; i++) {
+            if (patternParts[i].startsWith("{") && patternParts[i].endsWith("}")) {
+                String paramName = patternParts[i].substring(1, patternParts[i].length() - 1);
+                variables.put(paramName, pathParts[i]);
+            }
+        }
+        return variables;
+    }
+
     /* Mappe automatiquement les valeurs du formulaire aux arguments de la méthode.
     * Si le nom du paramètre de la méthode correspond au nom d'un input du formulaire,
     * la valeur est injectée. Sinon, l'argument reste null.*/
-    public static Object[] mapFormParametersToMethodArgs(Method method, HttpServletRequest request){
+    public static Object[] mapFormParametersToMethodArgs(Method method, HttpServletRequest request,String urlPattern, String actualPath){
         Parameter[] params = method.getParameters();
         Object[] args = new Object[params.length];
         for(int i=0; i< params.length ; i++){
             Parameter p=params[i];
             String value= null;
+
+             // Extraire les variables d'URL : /etudiant/{id} → id=12
+            Map<String, String> pathVars = extractPathVariables(urlPattern, actualPath);
+
+            // 1. @Param("xxx")
             if (p.isAnnotationPresent(Param.class)) {
                 String name = p.getAnnotation(Param.class).value();
                 value = request.getParameter(name);
             }
-            // 2. PAS d'annotation → on prend le vrai nom du paramètre
-            else {
-                // CETTE LIGNE NE MARCHE QUE SI TU COMPILES AVEC -parameters
-                if (p.isNamePresent()) {
-                    value = request.getParameter(p.getName());
+            // 2. Sinon : chercher d'abord dans les variables d'URL {id}
+            else if (p.isNamePresent()) {
+                String paramName = p.getName(); // ex: "id"
+                if (pathVars.containsKey(paramName)) {
+                    value = pathVars.get(paramName);
+                } else {
+                    value = request.getParameter(paramName);
                 }
             }
-            args[i]= convert(value,p.getType());
+            // Conversion automatique
+            if (value != null && !value.trim().isEmpty()) {
+                Class<?> type = p.getType();
+                try {
+                    if (type == String.class) {
+                        args[i] = value;
+                    } else if (type == int.class || type == Integer.class) {
+                        args[i] = Integer.parseInt(value);
+                    } else if (type == long.class || type == Long.class) {
+                        args[i] = Long.parseLong(value);
+                    } else if (type == double.class || type == Double.class) {
+                        args[i] = Double.parseDouble(value);
+                    } else {
+                        args[i] = value;
+                    }
+                } catch (Exception e) {
+                    args[i] = null;   // ← CORRIGÉ ICI
+                }
+            } else {
+                args[i] = null;
+            }
+                
+            }
+            return args;
         }
-        return args;
-    }
-
-    private static Object convert(String v, Class<?> t) {
-        if (v == null || v.isBlank()) return null;
-        try {
-            if (t == String.class) return v.trim();
-            if (t == int.class || t == Integer.class) return Integer.parseInt(v.trim());
-            if (t == long.class || t == Long.class) return Long.parseLong(v.trim());
-            if (t == double.class || t == Double.class) return Double.parseDouble(v.trim());
-            if (t == boolean.class || t == Boolean.class) return Boolean.parseBoolean(v.trim());
-        } catch (Exception e) { }
-        return v;
-    }
 }

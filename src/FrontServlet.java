@@ -16,6 +16,7 @@ public class FrontServlet extends HttpServlet {
     private static class RouteInfo {
         Class<?> controllerClass;
         Method method;
+        String urlPattern;  // NOUVEAU : "/etudiant/{id}", "/user/{id}/profile", etc.
     }
 
     @Override
@@ -39,6 +40,7 @@ public class FrontServlet extends HttpServlet {
                             RouteInfo info = new RouteInfo();
                             info.controllerClass = cls;
                             info.method = method;
+                            info.urlPattern = handler.url();        // NOUVEAU : on sauvegarde le pattern original
                             urlMappings.put(handler.url(), info);
                         }
                     }
@@ -70,12 +72,14 @@ public class FrontServlet extends HttpServlet {
         }
 
         if (urlMappings.containsKey(path)) {
-            executeRoute(path, request, response, urlMappings.get(path));
+            RouteInfo info = urlMappings.get(path);
+            executeRoute(path, request, response, info, info.urlPattern);  // on passe le pattern
             return;
         }
 
-        // 🔹 NOUVELLE FONCTIONNALITÉ : gestion des routes dynamiques avec {param}
+     // NOUVEAU : Recherche de routes dynamiques avec {id}
         RouteInfo matchedRoute = null;
+        String matchedPattern = null;
         for (Map.Entry<String, RouteInfo> entry : urlMappings.entrySet()) {
             String pattern = entry.getKey();
 
@@ -84,6 +88,7 @@ public class FrontServlet extends HttpServlet {
                 String regex = pattern.replaceAll("\\{[^/]+\\}", "[^/]+");
                 if (path.matches(regex)) {
                     matchedRoute = entry.getValue();
+                    matchedPattern = pattern;  // on garde le pattern original
                     break;
                 }
             }
@@ -99,32 +104,43 @@ public class FrontServlet extends HttpServlet {
         showResponse(response, path, "❌ L’URL n’existe pas dans les contrôleurs");
     }
 
-    private void executeRoute(String path, HttpServletRequest request, HttpServletResponse response, RouteInfo info)
-            throws IOException {
+    // NOUVELLE SURCHARGE : on passe le pattern original + l'URL réelle
+    private void executeRoute(String actualPath, HttpServletRequest request, HttpServletResponse response,
+                              RouteInfo info, String urlPattern) throws IOException {
         try {
             Object controller = info.controllerClass.getDeclaredConstructor().newInstance();
 
-            // 🔹 Injection automatique des valeurs du formulaire dans les arguments
-            Object[] args = Scanner.mapFormParametersToMethodArgs(info.method, request);
+            // MODIFIÉ : on passe urlPattern et actualPath pour extraire {id}
+            Object[] args = Scanner.mapFormParametersToMethodArgs(
+                info.method, 
+                request, 
+                urlPattern,      // ex: "/etudiant/{id}"
+                actualPath       // ex: "/etudiant/2"
+            );
 
             Object result = info.method.invoke(controller, args);
 
             if (result instanceof ModelView mv) {
-                // 🔹 Placer les données dans la requête pour le JSP
-                for (Map.Entry<String, Object> entry : mv.getData().entrySet()) {
+                for (var entry : mv.getData().entrySet()) {
                     request.setAttribute(entry.getKey(), entry.getValue());
                 }
                 String jspPath = "/WEB-INF/views/" + mv.getView();
                 RequestDispatcher dispatcher = request.getRequestDispatcher(jspPath);
                 dispatcher.forward(request, response);
             } else {
-                showDetailedResponse(response, path, info, result);
+                showDetailedResponse(response, actualPath, info, result);
             }
 
         } catch (Exception e) {
             e.printStackTrace();
-            showError(response, path, e.getMessage());
+            showError(response, actualPath, e.getMessage());
         }
+    }
+
+    // Ancienne méthode (pour compatibilité avec les routes simples)
+    private void executeRoute(String path, HttpServletRequest request, HttpServletResponse response, RouteInfo info)
+            throws IOException {
+        executeRoute(path, request, response, info, info.urlPattern != null ? info.urlPattern : path);
     }
 
     private void showDetailedResponse(HttpServletResponse response, String path, RouteInfo info, Object result)
