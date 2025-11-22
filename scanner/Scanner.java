@@ -6,6 +6,7 @@ import java.util.List;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import jakarta.servlet.http.HttpServletRequest;
+import framework.annotation.Param;
 
 public class Scanner {
 
@@ -33,15 +34,25 @@ public class Scanner {
         return classes;
     }
 
+    /* Mappe automatiquement les valeurs du formulaire aux arguments de la méthode.
+    * Si le nom du paramètre de la méthode correspond au nom d'un input du formulaire,
+    * la valeur est injectée. Sinon, l'argument reste null.*/
     public static Object[] mapFormParametersToMethodArgs(Method method, HttpServletRequest request){
         Parameter[] params = method.getParameters();
         Object[] args = new Object[params.length];
         for(int i=0; i< params.length ; i++){
             Parameter p=params[i];
             String value= null;
-            if(p.isNamePresent()){
-                value= request.getParameter(p.getName());
-
+            if (p.isAnnotationPresent(Param.class)) {
+                String name = p.getAnnotation(Param.class).value();
+                value = request.getParameter(name);
+            }
+            // 2. PAS d'annotation → on prend le vrai nom du paramètre
+            else {
+                // CETTE LIGNE NE MARCHE QUE SI TU COMPILES AVEC -parameters
+                if (p.isNamePresent()) {
+                    value = request.getParameter(p.getName());
+                }
             }
             args[i]= convert(value,p.getType());
         }
