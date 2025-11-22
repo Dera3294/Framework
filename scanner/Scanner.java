@@ -3,6 +3,9 @@ package framework.scanner;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.lang.reflect.Method;
+import java.lang.reflect.Parameter;
+import jakarta.servlet.http.HttpServletRequest;
 
 public class Scanner {
 
@@ -28,5 +31,32 @@ public class Scanner {
         }
 
         return classes;
+    }
+
+    public static Object[] mapFormParametersToMethodArgs(Method method, HttpServletRequest request){
+        Parameter[] params = method.getParameters();
+        Object[] args = new Object[params.length];
+        for(int i=0; i< params.length ; i++){
+            Parameter p=params[i];
+            String value= null;
+            if(p.isNamePresent()){
+                value= request.getParameter(p.getName());
+
+            }
+            args[i]= convert(value,p.getType());
+        }
+        return args;
+    }
+
+    private static Object convert(String v, Class<?> t) {
+        if (v == null || v.isBlank()) return null;
+        try {
+            if (t == String.class) return v.trim();
+            if (t == int.class || t == Integer.class) return Integer.parseInt(v.trim());
+            if (t == long.class || t == Long.class) return Long.parseLong(v.trim());
+            if (t == double.class || t == Double.class) return Double.parseDouble(v.trim());
+            if (t == boolean.class || t == Boolean.class) return Boolean.parseBoolean(v.trim());
+        } catch (Exception e) { }
+        return v;
     }
 }
