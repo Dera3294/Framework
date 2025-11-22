@@ -104,9 +104,8 @@ public class FrontServlet extends HttpServlet {
         try {
             Object controller = info.controllerClass.getDeclaredConstructor().newInstance();
 
-            // Pour les routes dynamiques, on met tous les paramètres à null 
-            Object[] args = new Object[info.method.getParameterCount()];
-            Arrays.fill(args, null);
+            // 🔹 Injection automatique des valeurs du formulaire dans les arguments
+            Object[] args = Scanner.mapFormParametersToMethodArgs(info.method, request);
 
             Object result = info.method.invoke(controller, args);
 
