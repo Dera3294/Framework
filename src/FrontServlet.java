@@ -23,22 +23,14 @@ public class FrontServlet extends HttpServlet {
         defaultDispatcher = getServletContext().getNamedDispatcher("default");
 
         try {
-            // === 🔍 Nouvelle logique : détecter automatiquement les classes à scanner ===
             String classesPath = getServletContext().getRealPath("/WEB-INF/classes");
-            if (classesPath == null) {
-                System.err.println("❌ Impossible de trouver le dossier WEB-INF/classes");
+            File baseDir = new File(classesPath);
+            if (!baseDir.exists()) {
+                System.err.println("❌ Dossier inexistant : " + classesPath);
                 return;
             }
 
-            File classesDir = new File(classesPath);
-            if (!classesDir.exists()) {
-                System.err.println("❌ Dossier WEB-INF/classes introuvable : " + classesPath);
-                return;
-            }
-
-            System.out.println("🔍 Scan du dossier : " + classesPath);
-
-            List<Class<?>> allClasses = Scanner.scanAllClasses(classesDir, "");
+            List<Class<?>> allClasses = Scanner.scanAllClasses(baseDir, "");
             for (Class<?> cls : allClasses) {
                 if (cls.isAnnotationPresent(Controller.class)) {
                     for (Method method : cls.getDeclaredMethods()) {
@@ -78,31 +70,61 @@ public class FrontServlet extends HttpServlet {
         }
 
         if (urlMappings.containsKey(path)) {
-            RouteInfo info = urlMappings.get(path);
-            try {
-                Object controller = info.controllerClass.getDeclaredConstructor().newInstance();
-                Object result = info.method.invoke(controller);
+            executeRoute(path, request, response, urlMappings.get(path));
+            return;
+        }
 
-                // 🔹 Vérifie si le résultat est un ModelView
-                if (result instanceof ModelView mv) {
-                    
-                    // On place les données dans la requête
-                    for (Map.Entry<String, Object> entry : mv.getData().entrySet()) {
-                        request.setAttribute(entry.getKey(), entry.getValue());
-                    }
-                    String jspPath = "/WEB-INF/views/" + mv.getView();
-                    RequestDispatcher dispatcher = request.getRequestDispatcher(jspPath);
-                    dispatcher.forward(request, response);
-                } else {
-                    showDetailedResponse(response, path, info, result);
+        // 🔹 NOUVELLE FONCTIONNALITÉ : gestion des routes dynamiques avec {param}
+        RouteInfo matchedRoute = null;
+        for (Map.Entry<String, RouteInfo> entry : urlMappings.entrySet()) {
+            String pattern = entry.getKey();
+
+            if (pattern.contains("{") && pattern.contains("}")) {
+                // Transformer le pattern en regex, ex: /etudiant/{id} -> /etudiant/[^/]+
+                String regex = pattern.replaceAll("\\{[^/]+\\}", "[^/]+");
+                if (path.matches(regex)) {
+                    matchedRoute = entry.getValue();
+                    break;
                 }
-
-            } catch (Exception e) {
-                e.printStackTrace();
-                showError(response, path, e.getMessage());
             }
-        } else {
-            showResponse(response, path, "❌ L’URL n’existe pas dans les contrôleurs");
+        }
+
+        if (matchedRoute != null) {
+            // 🔹 Exécuter la méthode correspondant à la route dynamique
+            executeRoute(path, request, response, matchedRoute);
+            return;
+        }
+
+        // 🔹 Si aucune route trouvée
+        showResponse(response, path, "❌ L’URL n’existe pas dans les contrôleurs");
+    }
+
+    private void executeRoute(String path, HttpServletRequest request, HttpServletResponse response, RouteInfo info)
+            throws IOException {
+        try {
+            Object controller = info.controllerClass.getDeclaredConstructor().newInstance();
+
+            // Pour les routes dynamiques, on met tous les paramètres à null 
+            Object[] args = new Object[info.method.getParameterCount()];
+            Arrays.fill(args, null);
+
+            Object result = info.method.invoke(controller, args);
+
+            if (result instanceof ModelView mv) {
+                // 🔹 Placer les données dans la requête pour le JSP
+                for (Map.Entry<String, Object> entry : mv.getData().entrySet()) {
+                    request.setAttribute(entry.getKey(), entry.getValue());
+                }
+                String jspPath = "/WEB-INF/views/" + mv.getView();
+                RequestDispatcher dispatcher = request.getRequestDispatcher(jspPath);
+                dispatcher.forward(request, response);
+            } else {
+                showDetailedResponse(response, path, info, result);
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            showError(response, path, e.getMessage());
         }
     }
 
