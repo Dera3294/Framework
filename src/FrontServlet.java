@@ -7,50 +7,30 @@ import framework.controllers.Controller;
 import framework.annotation.UrlHandler;
 import framework.scanner.Scanner;
 import framework.scanner.ModelView;
+import framework.scanner.MappedMethod;
 
 public class FrontServlet extends HttpServlet {
     
     private RequestDispatcher defaultDispatcher;
-    private Map<String, RouteInfo> urlMappings = new HashMap<>();
-
-    private static class RouteInfo {
-        Class<?> controllerClass;
-        Method method;
-        String urlPattern;  // NOUVEAU : "/etudiant/{id}", "/user/{id}/profile", etc.
-    }
+    private Map<String, List<MappedMethod>> urlMappings = new HashMap<>();
 
     @Override
     public void init() throws ServletException {
         defaultDispatcher = getServletContext().getNamedDispatcher("default");
 
         try {
+            // 🔹 Scanner toutes les classes du projet
             String classesPath = getServletContext().getRealPath("/WEB-INF/classes");
             File baseDir = new File(classesPath);
-            if (!baseDir.exists()) {
-                System.err.println("❌ Dossier inexistant : " + classesPath);
-                return;
-            }
 
-            List<Class<?>> allClasses = Scanner.scanAllClasses(baseDir, "");
-            for (Class<?> cls : allClasses) {
-                if (cls.isAnnotationPresent(Controller.class)) {
-                    for (Method method : cls.getDeclaredMethods()) {
-                        if (method.isAnnotationPresent(UrlHandler.class)) {
-                            UrlHandler handler = method.getAnnotation(UrlHandler.class);
-                            RouteInfo info = new RouteInfo();
-                            info.controllerClass = cls;
-                            info.method = method;
-                            info.urlPattern = handler.url();        // NOUVEAU : on sauvegarde le pattern original
-                            urlMappings.put(handler.url(), info);
-                        }
-                    }
-                }
-            }
+            // 🔹 Charger toutes les routes automatiquement
+            urlMappings = Scanner.loadAllRoutes(baseDir);
 
             ///AJOUT : stocker les routes dans le ServletContext pour y accéder plus tard
             ServletContext contexte = getServletContext();
             contexte.setAttribute("routesInfo", urlMappings);
-            System.out.println("✅ URLs détectées : " + urlMappings.keySet());
+            System.out.println("✅ Routes détectées :");
+            Scanner.printRoutes(urlMappings);
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -62,95 +42,56 @@ public class FrontServlet extends HttpServlet {
             throws ServletException, IOException {
 
         String path = request.getRequestURI().substring(request.getContextPath().length());
-        if (path.equals("/") || path.isEmpty()) path = "/index.html";
+        if (path.isEmpty() || path.equals("/")) path = "/index.html";
 
-        boolean resourceExists = getServletContext().getResource(path) != null;
-
-        if (resourceExists) {
+        // 🔹 Gestion automatique des ressources statiques
+        if (Scanner.isStaticResource(path, getServletContext())) {
             defaultDispatcher.forward(request, response);
             return;
         }
 
-        if (urlMappings.containsKey(path)) {
-            RouteInfo info = urlMappings.get(path);
-            executeRoute(path, request, response, info, info.urlPattern);  // on passe le pattern
-            return;
+        String httpMethod = request.getMethod().toUpperCase();
+        MappedMethod mapped = Scanner.findMappedMethod(path, httpMethod, urlMappings);
+
+        if (mapped != null) {
+            executeRoute(path, request, response, mapped);
+        } else {
+            response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+            showResponse(response, path,
+                "❌ Aucune méthode " + httpMethod + " trouvée pour l’URL : " + path);
         }
-
-     // NOUVEAU : Recherche de routes dynamiques avec {id}
-        RouteInfo matchedRoute = null;
-        String matchedPattern = null;
-        for (Map.Entry<String, RouteInfo> entry : urlMappings.entrySet()) {
-            String pattern = entry.getKey();
-
-            if (pattern.contains("{") && pattern.contains("}")) {
-                // Transformer le pattern en regex, ex: /etudiant/{id} -> /etudiant/[^/]+
-                String regex = pattern.replaceAll("\\{[^/]+\\}", "[^/]+");
-                if (path.matches(regex)) {
-                    matchedRoute = entry.getValue();
-                    matchedPattern = pattern;  // on garde le pattern original
-                    break;
-                }
-            }
-        }
-
-        if (matchedRoute != null) {
-            // 🔹 Exécuter la méthode correspondant à la route dynamique
-            executeRoute(path, request, response, matchedRoute);
-            return;
-        }
-
-        // 🔹 Si aucune route trouvée
-        showResponse(response, path, "❌ L’URL n’existe pas dans les contrôleurs");
     }
 
-    // NOUVELLE SURCHARGE : on passe le pattern original + l'URL réelle
-    private void executeRoute(String actualPath, HttpServletRequest request, HttpServletResponse response,
-                              RouteInfo info, String urlPattern) throws IOException {
+    private void executeRoute(String path, HttpServletRequest request, HttpServletResponse response,
+        MappedMethod mapped) throws IOException {
         try {
-            Object controller = info.controllerClass.getDeclaredConstructor().newInstance();
-
-            // MODIFIÉ : on passe urlPattern et actualPath pour extraire {id}
-            Object[] args = Scanner.mapFormParametersToMethodArgs(
-                info.method, 
-                request, 
-                urlPattern,      // ex: "/etudiant/{id}"
-                actualPath       // ex: "/etudiant/2"
-            );
-
-            Object result = info.method.invoke(controller, args);
+            Object result = mapped.invoke(request, path);
 
             if (result instanceof ModelView mv) {
                 for (var entry : mv.getData().entrySet()) {
-                    request.setAttribute(entry.getKey(), entry.getValue());
-                }
-                String jspPath = "/WEB-INF/views/" + mv.getView();
-                RequestDispatcher dispatcher = request.getRequestDispatcher(jspPath);
-                dispatcher.forward(request, response);
+                request.setAttribute(entry.getKey(), entry.getValue());
+            }
+            String jspPath = "/WEB-INF/views/" + mv.getView();
+            RequestDispatcher dispatcher = request.getRequestDispatcher(jspPath);
+            dispatcher.forward(request, response);
             } else {
-                showDetailedResponse(response, actualPath, info, result);
+                showDetailedResponse(response, path, mapped, result);
             }
 
         } catch (Exception e) {
-            e.printStackTrace();
-            showError(response, actualPath, e.getMessage());
+                e.printStackTrace();
+                showError(response, path, e.getMessage());
         }
-    }
+}
 
-    // Ancienne méthode (pour compatibilité avec les routes simples)
-    private void executeRoute(String path, HttpServletRequest request, HttpServletResponse response, RouteInfo info)
-            throws IOException {
-        executeRoute(path, request, response, info, info.urlPattern != null ? info.urlPattern : path);
-    }
-
-    private void showDetailedResponse(HttpServletResponse response, String path, RouteInfo info, Object result)
+    private void showDetailedResponse(HttpServletResponse response, String path, MappedMethod mapped, Object result)
             throws IOException {
         response.setContentType("text/html;charset=UTF-8");
         try (PrintWriter out = response.getWriter()) {
             out.println("<html><body>");
-            out.println("<h3>URL : " + path + "</h3>");
-            out.println("<p>Classe : " + info.controllerClass.getSimpleName() + "</p>");
-            out.println("<p>Méthode : " + info.method.getName() + "()</p>");
+            out.println("<h3>[" + mapped.getHttpMethod() + "] " + path + "</h3>");
+            out.println("<p>Classe : " + mapped.getControllerClass().getSimpleName() + "</p>");
+            out.println("<p>Méthode : " + mapped.getMethod().getName() + "()</p>");
             if (result != null) out.println("<hr>" + result);
             out.println("</body></html>");
         }
