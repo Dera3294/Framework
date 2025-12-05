@@ -5,6 +5,9 @@ import java.util.ArrayList;
 import java.util.*;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import java.lang.reflect.Field;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import jakarta.servlet.ServletContext;
 import jakarta.servlet.http.HttpServletRequest;
 import framework.annotation.*;
@@ -138,83 +141,160 @@ public class Scanner {
 
     // 🔹 Extraction des variables dynamiques dans l'URL (ex: /etudiant/{id})
     Map<String, String> pathVars = extractPathVariables(urlPattern, actualPath);
+    // Récupère tous les paramètres du formulaire
+    Map<String, String[]> formParams = request.getParameterMap();
 
-    // 🔹 Parcours de tous les paramètres de la méthode du contrôleur
         for (int i = 0; i < parameters.length; i++) {
             Parameter p = parameters[i];
-            Object argValue = null;
+            Class<?> paramType = p.getType();
+            Object value = null;
 
-            // ----------------------------------------------------------
-            // 🆕 1️⃣ NOUVELLE FONCTIONNALITÉ : support Map<String, Object>
-            // ----------------------------------------------------------
-            if (Map.class.isAssignableFrom(p.getType())) {
-                Map<String, Object> formMap = new HashMap<>();
-
-                // 🔸 1.1 Récupérer tous les champs simples du formulaire
-                Map<String, String[]> allParams = request.getParameterMap();
-                for (Map.Entry<String, String[]> entry : allParams.entrySet()) {
-                    String key = entry.getKey();
-                    String[] values = entry.getValue();
-
-                    if (values != null && values.length > 0) {
-                        if (values.length == 1) {
-                            // Champ unique (ex: text, email, hidden...)
-                            formMap.put(key, values[0]);
-                        } else {
-                            // Champs multiples (checkbox, select multiple…)
-                            formMap.put(key, Arrays.asList(values));
-                        }
-                    }
-                }
-
-                // 🔸 1.2 Récupérer les fichiers envoyés (multipart/form-data)
-                try {
-                    for (jakarta.servlet.http.Part part : request.getParts()) {
-                        // Vérifie si c’est bien un fichier uploadé
-                        if (part.getSubmittedFileName() != null && part.getSize() > 0) {
-                            formMap.put(part.getName(), part); // Stocke directement l’objet Part
-                        }
-                    }
-                } catch (Exception e) {
-                    // Pas de fichier ou requête non multipart : on ignore simplement
-                }
-
-                // Stocker la Map complète comme argument
-                argValue = formMap;
+            // --- 1️⃣ Cas : @Param explicite ---
+            if (p.isAnnotationPresent(Param.class)) {
+                String name = p.getAnnotation(Param.class).value();
+                String v = request.getParameter(name);
+                value = convertValue(v, paramType);
             }
 
-            // ----------------------------------------------------------
-            // 🔹 2️⃣ PARAMÈTRES CLASSIQUES (avec @Param, sans @Param, ou {id})
-            // ----------------------------------------------------------
+            // --- 2️⃣ Cas : Map<String, Object> ---
+            else if (Map.class.isAssignableFrom(paramType)) {
+                Map<String, Object> map = new HashMap<>();
+                for (Map.Entry<String, String[]> entry : formParams.entrySet()) {
+                    if (entry.getValue().length > 1) {
+                        map.put(entry.getKey(), Arrays.asList(entry.getValue()));
+                    } else {
+                        map.put(entry.getKey(), entry.getValue()[0]);
+                    }
+                }
+                value = map;
+            }
+
+            // --- 3️⃣ Cas : variable dans l’URL (path variable) ---
+            else if (pathVars.containsKey(p.getName())) {
+                value = convertValue(pathVars.get(p.getName()), paramType);
+            }
+
+            // --- 4️⃣ Cas : types simples (String, int, double, etc.) ---
+            else if (paramType.isPrimitive() ||
+                    paramType == String.class ||
+                    Number.class.isAssignableFrom(paramType) ||
+                    paramType == Boolean.class) {
+                String v = request.getParameter(p.getName());
+                value = convertValue(v, paramType);
+            }
+
+            // --- 5️⃣ Cas : objet complexe (classe Java personnalisée) ---
             else {
-                String value = null;
+                try {
+                    Object instance = paramType.getDeclaredConstructor().newInstance();
 
-                // 2.1 Si le paramètre a l’annotation @Param
-                if (p.isAnnotationPresent(Param.class)) {
-                    String name = p.getAnnotation(Param.class).value();
-                    value = request.getParameter(name);
+                    // 🔹 Correction : injecte TOUS les champs du formulaire
+                    // sans exiger de préfixe "parametre." (comme employe.)
+                    for (Map.Entry<String, String[]> entry : formParams.entrySet()) {
+                        String paramName = entry.getKey();
+                        String[] values = entry.getValue();
+
+                        // Si le champ commence par le nom de la variable (ex: "employe.")
+                        // on enlève ce préfixe avant injection
+                        if (paramName.startsWith(p.getName() + ".")) {
+                            paramName = paramName.substring((p.getName() + ".").length());
+                        }
+
+                        try {
+                            String fieldName = paramName.split("\\.")[0];
+                            boolean hasField = Arrays.stream(paramType.getDeclaredFields())
+                                                    .anyMatch(f -> f.getName().equals(fieldName));
+
+                            if (hasField || paramName.contains(".")) {
+                                setObjectFieldValue(instance, paramName, values);
+                            }
+                        } catch (Exception ignored) {}
+                    }
+
+                    value = instance;
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    value = null;
                 }
-
-                // 2.2 Sinon, on essaie le nom du paramètre (si compilé avec -parameters)
-                if ((value == null || value.isEmpty()) && p.isNamePresent()) {
-                    value = request.getParameter(p.getName());
-                }
-
-                // 2.3 Sinon, on regarde dans les variables dynamiques de l’URL {id}
-                if ((value == null || value.isEmpty()) && pathVars.containsKey(p.getName())) {
-                    value = pathVars.get(p.getName());
-                }
-
-                // 2.4 Conversion automatique vers le bon type (int, long, double, String, etc.)
-                argValue = convertValue(value, p.getType());
             }
 
-            // Enregistre la valeur trouvée dans le tableau des arguments
-            args[i] = argValue;
+            args[i] = value;
         }
-
-        // 🔹 Retourne tous les arguments préparés pour l’invocation
         return args;
+    }
+
+    private static void setObjectFieldValue(Object obj, String paramName, String[] values) {
+        try {
+            if (obj == null || paramName == null) return;
+    
+            // Exemple : "departements[0].nom" ou "adresse.ville"
+            String[] parts = paramName.split("\\.");
+            Object currentObj = obj;
+    
+            for (int i = 0; i < parts.length; i++) {
+                String fieldName = parts[i];
+    
+                // --- 🔹 Cas spécial : champ de liste (ex: departements[0]) ---
+                int listIndex = -1;
+                if (fieldName.contains("[") && fieldName.contains("]")) {
+                    String baseName = fieldName.substring(0, fieldName.indexOf("["));
+                    listIndex = Integer.parseInt(fieldName.substring(fieldName.indexOf("[") + 1, fieldName.indexOf("]")));
+                    fieldName = baseName;
+                }
+    
+                Field field = currentObj.getClass().getDeclaredField(fieldName);
+                field.setAccessible(true);
+                Class<?> fieldType = field.getType();
+    
+                // --- 🔹 Dernier champ (injection finale de valeur simple) ---
+                if (i == parts.length - 1) {
+                    Object converted = null;
+                    if (values != null && values.length > 0) {
+                        if (values.length > 1)
+                            converted = Arrays.asList(values);
+                        else
+                            converted = convertValue(values[0], fieldType);
+                    }
+                    field.set(currentObj, converted);
+                }
+                else {
+                    // --- 🔹 Si c’est une liste d’objets ---
+                    if (List.class.isAssignableFrom(fieldType)) {
+                        List<Object> list = (List<Object>) field.get(currentObj);
+                        if (list == null) {
+                            list = new ArrayList<>();
+                            field.set(currentObj, list);
+                        }
+    
+                        // Déterminer le type générique de la liste
+                        ParameterizedType genericType = (ParameterizedType) field.getGenericType();
+                        Class<?> elementType = (Class<?>) genericType.getActualTypeArguments()[0];
+    
+                        // Créer ou récupérer l’objet à l’index demandé
+                        while (list.size() <= listIndex) {
+                            list.add(elementType.getDeclaredConstructor().newInstance());
+                        }
+    
+                        Object element = list.get(listIndex);
+                        String remainingPath = String.join(".", Arrays.copyOfRange(parts, i + 1, parts.length));
+                        setObjectFieldValue(element, remainingPath, values);
+                        return; // stop ici car tout le reste est géré récursivement
+                    }
+    
+                    // --- 🔹 Cas d’un sous-objet normal (ex: adresse.ville) ---
+                    Object nested = field.get(currentObj);
+                    if (nested == null) {
+                        nested = fieldType.getDeclaredConstructor().newInstance();
+                        field.set(currentObj, nested);
+                    }
+                    currentObj = nested;
+                }
+            }
+        } catch (NoSuchFieldException e) {
+            // Champ inexistant, on ignore pour éviter le crash
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     private static Map<String, String> extractPathVariables(String pattern, String actualPath) {
