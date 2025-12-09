@@ -2,6 +2,7 @@ package framework.scanner;
 
 import jakarta.servlet.http.HttpServletRequest;
 import java.lang.reflect.Method;
+import framework.annotation.Json;
 
 public class MappedMethod {
     private final Class<?> controllerClass;
@@ -32,6 +33,10 @@ public class MappedMethod {
         );
 
         return method.invoke(controller, args);
+    }
+
+    public boolean isJson() {
+        return method.isAnnotationPresent(Json.class);
     }
 
     @Override

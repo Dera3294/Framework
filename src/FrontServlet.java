@@ -67,6 +67,12 @@ public class FrontServlet extends HttpServlet {
         try {
             Object result = mapped.invoke(request, path);
 
+            // ✅ Si la méthode est annotée @Json
+            if (mapped.isJson()) {
+                Scanner.sendJson(response, result, null);
+                return;
+            }
+
             if (result instanceof ModelView mv) {
                 for (var entry : mv.getData().entrySet()) {
                 request.setAttribute(entry.getKey(), entry.getValue());
@@ -80,7 +86,13 @@ public class FrontServlet extends HttpServlet {
 
         } catch (Exception e) {
                 e.printStackTrace();
-                showError(response, path, e.getMessage());
+
+                // Si méthode @Json : renvoyer JSON d'erreur
+                if (mapped.isJson()) {
+                    Scanner.sendJson(response, null, e);
+                } else {
+                    showError(response, path, e.getMessage());
+                }
         }
 }
 
