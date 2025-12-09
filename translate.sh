@@ -6,6 +6,7 @@
 # → Copie FORCÉE dans l'app Test-framework (priorité maximale)
 # → Nettoyage complet à chaque fois
 # → Messages clairs
+# → 🆕 Support de GSON (.jar ajouté dans le classpath)
 # =========================================================
 
 echo "=============================================================="
@@ -25,6 +26,16 @@ elif [ ! -f "lib/jakarta.servlet-api.jar" ]; then
     exit 1
 else
     echo "jakarta.servlet-api.jar déjà présent"
+fi
+
+# 🆕 ------------------- 1B. Vérification de la librairie Gson -------------------
+if [ ! -f "lib/gson-2.10.1.jar" ]; then
+    echo "⚠️  Attention : gson-2.10.1.jar manquant dans lib/"
+    echo "   → Téléchargez-le ici : https://repo1.maven.org/maven2/com/google/code/gson/gson/2.10.1/gson-2.10.1.jar"
+    echo "   → Puis placez-le dans le dossier lib/"
+    exit 1
+else
+    echo "✅ gson-2.10.1.jar détecté"
 fi
 
 # ------------------- 2. Nettoyage complet -------------------
@@ -54,28 +65,36 @@ if [ ! -s sources.txt ]; then
 fi
 
 echo "Compilation en cours avec -parameters (CRUCIAL pour les paramètres sans @Param)..."
+
+# 🆕 AJOUT IMPORTANT : lib/* inclut jakarta.servlet-api.jar + gson.jar
 javac -parameters \
-      -cp "lib/jakarta.servlet-api.jar" \
+      -cp "lib/*" \
       -d "$OUT_DIR" \
       @sources.txt
 
+# 🔹 Explication :
+# "lib/*" = inclut automatiquement tous les .jar du dossier lib/
+#   → jakarta.servlet-api.jar
+#   → gson-2.10.1.jar
+#   → et tout autre .jar ajouté plus tard
+
 if [ $? -ne 0 ]; then
-    echo "ÉCHEC DE LA COMPILATION"
+    echo "❌ ÉCHEC DE LA COMPILATION"
     rm sources.txt
     exit 1
 fi
 
-echo "COMPILATION RÉUSSIE !"
+echo "✅ COMPILATION RÉUSSIE !"
 rm sources.txt
 
-# ------------------- 4. COPIE DIRECTE DANS L'APP Test-framework (LA CLÉ) -------------------
+# ------------------- 4. COPIE DIRECTE DANS L'APP Test-framework -------------------
 echo
 if [ -d "../Test-framework/WEB-INF/classes" ] || mkdir -p "../Test-framework/WEB-INF/classes" 2>/dev/null; then
-    echo "Copie FORCÉE des classes dans ../Test-framework/WEB-INF/classes (priorité maximale sur Tomcat)"
+    echo "Copie FORCÉE des classes dans ../Test-framework/WEB-INF/classes"
     cp -r "$OUT_DIR"/* ../Test-framework/WEB-INF/classes/
     echo "   → Toutes les classes fraîchement compilées sont maintenant dans l'app Test-framework"
 else
-    echo "ATTENTION : Impossible de copier dans ../Test-framework/WEB-INF/classes (dossier manquant)"
+    echo "⚠️  ATTENTION : Impossible de copier dans ../Test-framework/WEB-INF/classes (dossier manquant)"
 fi
 
 # ------------------- 5. Création du JAR (facultatif mais propre) -------------------
@@ -98,12 +117,8 @@ fi
 
 # =========================================================
 echo
-echo "TOUT EST PARFAITEMENT PRÊT !"
+echo "🎯 TOUT EST PARFAITEMENT PRÊT !"
 echo "→ Les paramètres SANS @Param fonctionnent à 100%"
-echo "→ String nom, int age, etc. seront remplis automatiquement"
-echo "→ Plus jamais de null"
-echo
-echo "Test-frameworke maintenant avec un contrôleur comme :"
-echo "   public String Test-framework(String email, int age)"
-echo "   → ça marchera sans @Param"
+echo "→ Support complet : JSP, objets, Map, List, @Json (Gson)"
+echo "→ Fichiers .jar pris en charge automatiquement depuis lib/"
 echo "=============================================================="

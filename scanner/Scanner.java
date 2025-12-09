@@ -10,9 +10,13 @@ import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import jakarta.servlet.ServletContext;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import framework.annotation.*;
 import framework.controllers.Controller;
 import java.net.MalformedURLException;
+import framework.utils.ApiResponse;
+import framework.utils.JsonUtils;
+import java.io.IOException;
 
 public class Scanner {
 
@@ -132,110 +136,154 @@ public class Scanner {
 // ------------------------------
     // 🔹 6. MAPPING DES PARAMÈTRES DE FORMULAIRE
     // ------------------------------
-    public static Object[] mapFormParametersToMethodArgs(Method method,
-                                                     HttpServletRequest request,
-                                                     String urlPattern,
-                                                     String actualPath) {
-    Parameter[] parameters = method.getParameters();
-    Object[] args = new Object[parameters.length];
-
-    // 🔹 Extraction des variables dynamiques dans l'URL (ex: /etudiant/{id})
-    Map<String, String> pathVars = extractPathVariables(urlPattern, actualPath);
-    // Récupère tous les paramètres du formulaire
-    Map<String, String[]> formParams = request.getParameterMap();
-
+    public static Object[] mapFormParametersToMethodArgs(Method method, HttpServletRequest request, String urlPattern, String actualPath) {
+        Parameter[] parameters = method.getParameters();
+        Object[] args = new Object[parameters.length];
+    
+        // Récupère les variables dynamiques {id} dans l’URL
+        Map<String, String> pathVars = extractPathVariables(urlPattern, actualPath);
+    
+        // Récupère tous les paramètres du formulaire
+        Map<String, String[]> formParams = request.getParameterMap();
+    
         for (int i = 0; i < parameters.length; i++) {
             Parameter p = parameters[i];
             Class<?> paramType = p.getType();
             Object value = null;
-
-            // --- 1️⃣ Cas : @Param explicite ---
-            if (p.isAnnotationPresent(Param.class)) {
-                String name = p.getAnnotation(Param.class).value();
-                String v = request.getParameter(name);
-                value = convertValue(v, paramType);
-            }
-
-            // --- 2️⃣ Cas : Map<String, Object> ---
-            else if (Map.class.isAssignableFrom(paramType)) {
-                Map<String, Object> map = new HashMap<>();
-                for (Map.Entry<String, String[]> entry : formParams.entrySet()) {
-                    if (entry.getValue().length > 1) {
-                        map.put(entry.getKey(), Arrays.asList(entry.getValue()));
-                    } else {
-                        map.put(entry.getKey(), entry.getValue()[0]);
-                    }
+    
+            try {
+                // --- 1️⃣ Cas : @Param explicite ---
+                if (p.isAnnotationPresent(Param.class)) {
+                    String name = p.getAnnotation(Param.class).value();
+                    String v = request.getParameter(name);
+                    value = convertValue(v, paramType);
                 }
-                value = map;
-            }
-
-            // --- 3️⃣ Cas : variable dans l’URL (path variable) ---
-            else if (pathVars.containsKey(p.getName())) {
-                value = convertValue(pathVars.get(p.getName()), paramType);
-            }
-
-            // --- 4️⃣ Cas : types simples (String, int, double, etc.) ---
-            else if (paramType.isPrimitive() ||
-                    paramType == String.class ||
-                    Number.class.isAssignableFrom(paramType) ||
-                    paramType == Boolean.class) {
-                String v = request.getParameter(p.getName());
-                value = convertValue(v, paramType);
-            }
-
-            // --- 5️⃣ Cas : objet complexe (classe Java personnalisée) ---
-            else {
-                try {
+                // --- 2️⃣ Cas : Map<String, Object> ---
+                else if (Map.class.isAssignableFrom(paramType)) {
+                    Map<String, Object> map = new HashMap<>();
+                    for (Map.Entry<String, String[]> entry : formParams.entrySet()) {
+                        if (entry.getValue().length > 1) {
+                            map.put(entry.getKey(), Arrays.asList(entry.getValue()));
+                        } else {
+                            map.put(entry.getKey(), entry.getValue()[0]);
+                        }
+                    }
+                    value = map;
+                }
+                // --- 3️⃣ Cas : variable dans l’URL ---
+                else if (pathVars.containsKey(p.getName())) {
+                    value = convertValue(pathVars.get(p.getName()), paramType);
+                }
+                // --- 4️⃣ Cas : types simples ---
+                else if (paramType.isPrimitive() || paramType == String.class || Number.class.isAssignableFrom(paramType) || paramType == Boolean.class) {
+                    String v = request.getParameter(p.getName());
+                    value = convertValue(v, paramType);
+                }
+                // --- 5️⃣ Cas : tableau ou liste ---
+                else if (paramType.isArray() || List.class.isAssignableFrom(paramType)) {
+                    value = createArrayOrListFromForm(p, paramType, formParams);
+                }
+                // --- 6️⃣ Cas : objet complexe ---
+                else {
                     Object instance = paramType.getDeclaredConstructor().newInstance();
-
-                    // 🔹 Correction : injecte TOUS les champs du formulaire
-                    // sans exiger de préfixe "parametre." (comme employe.)
                     for (Map.Entry<String, String[]> entry : formParams.entrySet()) {
                         String paramName = entry.getKey();
                         String[] values = entry.getValue();
-
-                        // Si le champ commence par le nom de la variable (ex: "employe.")
-                        // on enlève ce préfixe avant injection
+    
                         if (paramName.startsWith(p.getName() + ".")) {
                             paramName = paramName.substring((p.getName() + ".").length());
                         }
-
-                        try {
-                            String fieldName = paramName.split("\\.")[0];
-                            boolean hasField = Arrays.stream(paramType.getDeclaredFields())
-                                                    .anyMatch(f -> f.getName().equals(fieldName));
-
-                            if (hasField || paramName.contains(".")) {
-                                setObjectFieldValue(instance, paramName, values);
-                            }
-                        } catch (Exception ignored) {}
+    
+                        setObjectFieldValue(instance, paramName, values);
                     }
-
                     value = instance;
-                } catch (Exception e) {
-                    e.printStackTrace();
-                    value = null;
                 }
+    
+            } catch (Exception e) {
+                e.printStackTrace();
+                value = null;
             }
-
+    
             args[i] = value;
         }
+    
         return args;
     }
-
+    
+    
+    @SuppressWarnings("unchecked")
+    private static Object createArrayOrListFromForm(Parameter parameter, Class<?> paramType, Map<String, String[]> formParams) throws Exception {
+        String paramName = parameter.getName();
+    
+        if (paramType.isArray()) {
+            Class<?> elementType = paramType.getComponentType();
+            List<Object> list = new ArrayList<>();
+    
+            for (Map.Entry<String, String[]> entry : formParams.entrySet()) {
+                String key = entry.getKey();
+                if (key.startsWith(paramName + "[")) {
+                    int idxStart = key.indexOf('[') + 1;
+                    int idxEnd = key.indexOf(']');
+                    int idx = Integer.parseInt(key.substring(idxStart, idxEnd));
+    
+                    while (list.size() <= idx) {
+                        list.add(elementType.getDeclaredConstructor().newInstance());
+                    }
+    
+                    Object element = list.get(idx);
+                    String remaining = key.substring(idxEnd + 2); // skip ]. 
+                    setObjectFieldValue(element, remaining, entry.getValue());
+                }
+            }
+    
+            Object array = java.lang.reflect.Array.newInstance(elementType, list.size());
+            for (int i = 0; i < list.size(); i++) {
+                java.lang.reflect.Array.set(array, i, list.get(i));
+            }
+            return array;
+    
+        } else if (List.class.isAssignableFrom(paramType)) {
+            ParameterizedType genericType = (ParameterizedType) parameter.getParameterizedType();
+            Class<?> elementType = (Class<?>) genericType.getActualTypeArguments()[0];
+            List<Object> list = new ArrayList<>();
+    
+            for (Map.Entry<String, String[]> entry : formParams.entrySet()) {
+                String key = entry.getKey();
+                if (key.startsWith(paramName + "[")) {
+                    int idxStart = key.indexOf('[') + 1;
+                    int idxEnd = key.indexOf(']');
+                    int idx = Integer.parseInt(key.substring(idxStart, idxEnd));
+    
+                    while (list.size() <= idx) {
+                        list.add(elementType.getDeclaredConstructor().newInstance());
+                    }
+    
+                    Object element = list.get(idx);
+                    String remaining = key.substring(idxEnd + 2);
+                    setObjectFieldValue(element, remaining, entry.getValue());
+                }
+            }
+            return list;
+        }
+    
+        return null;
+    }
+    
+    
+    
+    
     private static void setObjectFieldValue(Object obj, String paramName, String[] values) {
         try {
             if (obj == null || paramName == null) return;
     
-            // Exemple : "departements[0].nom" ou "adresse.ville"
             String[] parts = paramName.split("\\.");
             Object currentObj = obj;
     
             for (int i = 0; i < parts.length; i++) {
                 String fieldName = parts[i];
-    
-                // --- 🔹 Cas spécial : champ de liste (ex: departements[0]) ---
                 int listIndex = -1;
+    
+                // Gestion des listes : "es[0]"
                 if (fieldName.contains("[") && fieldName.contains("]")) {
                     String baseName = fieldName.substring(0, fieldName.indexOf("["));
                     listIndex = Integer.parseInt(fieldName.substring(fieldName.indexOf("[") + 1, fieldName.indexOf("]")));
@@ -246,7 +294,6 @@ public class Scanner {
                 field.setAccessible(true);
                 Class<?> fieldType = field.getType();
     
-                // --- 🔹 Dernier champ (injection finale de valeur simple) ---
                 if (i == parts.length - 1) {
                     Object converted = null;
                     if (values != null && values.length > 0) {
@@ -256,9 +303,7 @@ public class Scanner {
                             converted = convertValue(values[0], fieldType);
                     }
                     field.set(currentObj, converted);
-                }
-                else {
-                    // --- 🔹 Si c’est une liste d’objets ---
+                } else {
                     if (List.class.isAssignableFrom(fieldType)) {
                         List<Object> list = (List<Object>) field.get(currentObj);
                         if (list == null) {
@@ -266,11 +311,9 @@ public class Scanner {
                             field.set(currentObj, list);
                         }
     
-                        // Déterminer le type générique de la liste
                         ParameterizedType genericType = (ParameterizedType) field.getGenericType();
                         Class<?> elementType = (Class<?>) genericType.getActualTypeArguments()[0];
     
-                        // Créer ou récupérer l’objet à l’index demandé
                         while (list.size() <= listIndex) {
                             list.add(elementType.getDeclaredConstructor().newInstance());
                         }
@@ -278,10 +321,9 @@ public class Scanner {
                         Object element = list.get(listIndex);
                         String remainingPath = String.join(".", Arrays.copyOfRange(parts, i + 1, parts.length));
                         setObjectFieldValue(element, remainingPath, values);
-                        return; // stop ici car tout le reste est géré récursivement
+                        return;
                     }
     
-                    // --- 🔹 Cas d’un sous-objet normal (ex: adresse.ville) ---
                     Object nested = field.get(currentObj);
                     if (nested == null) {
                         nested = fieldType.getDeclaredConstructor().newInstance();
@@ -290,8 +332,9 @@ public class Scanner {
                     currentObj = nested;
                 }
             }
-        } catch (NoSuchFieldException e) {
-            // Champ inexistant, on ignore pour éviter le crash
+    
+        } catch (NoSuchFieldException ignored) {
+            // Champ inexistant, ignore
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -321,5 +364,19 @@ public class Scanner {
             if (type == double.class || type == Double.class) return Double.parseDouble(value);
         } catch (Exception ignored) {}
         return null;
+    }
+
+    public static void sendJson(HttpServletResponse response, Object result, Exception ex) throws IOException {
+        ApiResponse apiResponse;
+
+        if (ex != null) {
+            // Si une exception est passée, retour d'erreur JSON
+            apiResponse = new ApiResponse("error", 400, null);
+        } else {
+            apiResponse = new ApiResponse("success", 200, result);
+        }
+
+        response.setContentType("application/json;charset=UTF-8");
+        response.getWriter().write(JsonUtils.toJson(apiResponse));
     }
 }
