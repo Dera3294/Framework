@@ -8,6 +8,14 @@ import framework.annotation.UrlHandler;
 import framework.scanner.Scanner;
 import framework.scanner.ModelView;
 import framework.scanner.MappedMethod;
+import jakarta.servlet.annotation.MultipartConfig;
+
+
+@MultipartConfig(
+    fileSizeThreshold = 1024 * 1024, // 1MB
+    maxFileSize = 50 * 1024 * 1024,  // 50MB par fichier
+    maxRequestSize = 200 * 1024 * 1024 // 200MB total
+)
 
 public class FrontServlet extends HttpServlet {
     

@@ -17,6 +17,9 @@ import java.net.MalformedURLException;
 import framework.utils.ApiResponse;
 import framework.utils.JsonUtils;
 import java.io.IOException;
+import jakarta.servlet.http.Part;
+import framework.utils.UploadedFile;
+import java.io.InputStream;
 
 public class Scanner {
 
@@ -136,78 +139,172 @@ public class Scanner {
 // ------------------------------
     // 🔹 6. MAPPING DES PARAMÈTRES DE FORMULAIRE
     // ------------------------------
-    public static Object[] mapFormParametersToMethodArgs(Method method, HttpServletRequest request, String urlPattern, String actualPath) {
+        public static Object[] mapFormParametersToMethodArgs(
+            Method method,
+            HttpServletRequest request,
+            String urlPattern,
+            String actualPath) {
+
         Parameter[] parameters = method.getParameters();
         Object[] args = new Object[parameters.length];
-    
-        // Récupère les variables dynamiques {id} dans l’URL
+
+        // Variables dynamiques dans l’URL (ex: /user/{id})
         Map<String, String> pathVars = extractPathVariables(urlPattern, actualPath);
-    
-        // Récupère tous les paramètres du formulaire
+
+        // Paramètres simples (form data)
         Map<String, String[]> formParams = request.getParameterMap();
-    
+
         for (int i = 0; i < parameters.length; i++) {
             Parameter p = parameters[i];
             Class<?> paramType = p.getType();
             Object value = null;
-    
+
             try {
-                // --- 1️⃣ Cas : @Param explicite ---
-                if (p.isAnnotationPresent(Param.class)) {
-                    String name = p.getAnnotation(Param.class).value();
+                // 1️ Objets de contexte
+                if (paramType == HttpServletRequest.class) {
+                    value = request;
+                } else if (paramType == jakarta.servlet.http.HttpSession.class) {
+                    value = request.getSession();
+                }
+
+                //2️ Paramètre avec @Param
+                else if (p.isAnnotationPresent(framework.annotation.Param.class)) {
+                    String name = p.getAnnotation(framework.annotation.Param.class).value();
                     String v = request.getParameter(name);
                     value = convertValue(v, paramType);
                 }
-                // --- 2️⃣ Cas : Map<String, Object> ---
+
+                // 3️ Map<String,Object>
                 else if (Map.class.isAssignableFrom(paramType)) {
                     Map<String, Object> map = new HashMap<>();
                     for (Map.Entry<String, String[]> entry : formParams.entrySet()) {
-                        if (entry.getValue().length > 1) {
+                        if (entry.getValue().length > 1)
                             map.put(entry.getKey(), Arrays.asList(entry.getValue()));
-                        } else {
+                        else
                             map.put(entry.getKey(), entry.getValue()[0]);
-                        }
                     }
                     value = map;
                 }
-                // --- 3️⃣ Cas : variable dans l’URL ---
+
+                // 4️ Variables dynamiques {id} dans l’URL
                 else if (pathVars.containsKey(p.getName())) {
                     value = convertValue(pathVars.get(p.getName()), paramType);
                 }
-                // --- 4️⃣ Cas : types simples ---
-                else if (paramType.isPrimitive() || paramType == String.class || Number.class.isAssignableFrom(paramType) || paramType == Boolean.class) {
+
+                // 5️ Types simples
+                else if (paramType.isPrimitive()
+                        || paramType == String.class
+                        || Number.class.isAssignableFrom(paramType)
+                        || paramType == Boolean.class) {
                     String v = request.getParameter(p.getName());
                     value = convertValue(v, paramType);
                 }
-                // --- 5️⃣ Cas : tableau ou liste ---
+
+                //6️ Tableaux ou listes (ex: Employe[])
                 else if (paramType.isArray() || List.class.isAssignableFrom(paramType)) {
                     value = createArrayOrListFromForm(p, paramType, formParams);
                 }
-                // --- 6️⃣ Cas : objet complexe ---
-                else {
+
+                // 7 Upload d’un seul fichier
+                else if (paramType == framework.utils.UploadedFile.class) {
+                    Part part = request.getPart(p.getName());
+                    if (part != null && part.getSubmittedFileName() != null && part.getSize() > 0) {
+                        byte[] bytes = part.getInputStream().readAllBytes();
+                        value = new framework.utils.UploadedFile(
+                                part.getSubmittedFileName(),
+                                part.getContentType(),
+                                part.getSize(),
+                                bytes
+                        );
+                    }
+                }
+
+                // Upload : plusieurs fichiers
+                else if (paramType.isArray()
+                    && paramType.getComponentType() == framework.utils.UploadedFile.class) {
+
+                    List<UploadedFile> files = new ArrayList<>();
+
+                    // Détermine le nom du champ de formulaire
+                    String paramName = p.getName();
+                    if (p.isAnnotationPresent(framework.annotation.Param.class)) {
+                        paramName = p.getAnnotation(framework.annotation.Param.class).value();
+                    }
+
+                    for (Part part : request.getParts()) {
+                        if (part.getName().equals(paramName) &&
+                            part.getSubmittedFileName() != null &&
+                            part.getSize() > 0) {
+
+                            byte[] bytes = part.getInputStream().readAllBytes();
+                            files.add(new UploadedFile(
+                                    part.getSubmittedFileName(),
+                                    part.getContentType(),
+                                    part.getSize(),
+                                    bytes
+                            ));
+                        }
+                    }
+
+                    value = files.toArray(new UploadedFile[0]);
+                }
+            
+            // ✅ 9️⃣ Objets complexes (ex: Departement, Employe)
+            else {
                     Object instance = paramType.getDeclaredConstructor().newInstance();
+
                     for (Map.Entry<String, String[]> entry : formParams.entrySet()) {
                         String paramName = entry.getKey();
                         String[] values = entry.getValue();
-    
+
                         if (paramName.startsWith(p.getName() + ".")) {
                             paramName = paramName.substring((p.getName() + ".").length());
                         }
-    
+
                         setObjectFieldValue(instance, paramName, values);
                     }
                     value = instance;
                 }
-    
+
             } catch (Exception e) {
                 e.printStackTrace();
                 value = null;
             }
-    
+
             args[i] = value;
         }
-    
+
         return args;
+    }
+
+
+
+    public static void extractMultipartData(HttpServletRequest request,
+                                            Map<String, String[]> formParams,
+                                            Map<String, List<UploadedFile>> fileParams)
+            throws Exception {
+
+        request.setCharacterEncoding("UTF-8");
+
+        for (Part part : request.getParts()) {
+            String name = part.getName();
+
+            if (part.getSubmittedFileName() != null && !part.getSubmittedFileName().isEmpty()) {
+                try (InputStream input = part.getInputStream()) {
+                    byte[] bytes = input.readAllBytes();
+                    UploadedFile file = new UploadedFile(
+                            part.getSubmittedFileName(),
+                            part.getContentType(),
+                            part.getSize(),
+                            bytes
+                    );
+                    fileParams.computeIfAbsent(name, k -> new ArrayList<>()).add(file);
+                }
+            } else {
+                String value = new String(part.getInputStream().readAllBytes(), "UTF-8");
+                formParams.put(name, new String[]{value});
+            }
+        }
     }
     
     
