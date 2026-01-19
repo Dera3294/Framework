@@ -11,6 +11,7 @@ import java.lang.reflect.Type;
 import jakarta.servlet.ServletContext;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpSession;
 import framework.annotation.*;
 import framework.controllers.Controller;
 import java.net.MalformedURLException;
@@ -166,6 +167,37 @@ public class Scanner {
                 } else if (paramType == jakarta.servlet.http.HttpSession.class) {
                     value = request.getSession();
                 }
+
+                //Paramètre annoté @Session → Map<String,Object> liée à la session
+                else if (p.isAnnotationPresent(framework.annotation.Session.class)
+                        && Map.class.isAssignableFrom(paramType)) {
+                HttpSession session = request.getSession(true);
+                Map<String, Object> sessionMap = new java.util.AbstractMap<>() {
+
+                @Override
+                public Object put(String key, Object val) {
+                        session.setAttribute(key, val);
+                            return val;
+                }
+            
+                @Override
+                public Object get(Object key) {
+                    return session.getAttribute((String) key);
+                }
+                @Override
+                public Set<Entry<String, Object>> entrySet() {
+                Set<Entry<String, Object>> entries = new HashSet<>();
+                Enumeration<String> names = session.getAttributeNames();
+                    while (names.hasMoreElements()) {
+                        String name = names.nextElement();
+                        entries.add(new SimpleEntry<>(name, session.getAttribute(name)));
+                        }
+                        return entries;
+                    }
+                };
+            
+                value = sessionMap;
+            }
 
                 //2️ Paramètre avec @Param
                 else if (p.isAnnotationPresent(framework.annotation.Param.class)) {
